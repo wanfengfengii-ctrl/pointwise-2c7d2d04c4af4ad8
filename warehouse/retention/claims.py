@@ -8,6 +8,7 @@ class Obligation:
     request_id: str | None
     start_sequence: int
     confirmed_through: int
+    station: str | None = None
 
 
 def initialize_claims(connection: Connection) -> None:
@@ -16,6 +17,7 @@ def initialize_claims(connection: Connection) -> None:
             subscription TEXT PRIMARY KEY, request_id TEXT UNIQUE,
             start_sequence INTEGER NOT NULL,
             confirmed_through INTEGER NOT NULL,
+            station TEXT,
             CHECK (0 <= start_sequence AND start_sequence <= confirmed_through),
             CHECK (request_id IS NOT NULL OR start_sequence = 0)
         )
@@ -28,7 +30,7 @@ def initialize_claims(connection: Connection) -> None:
 
 def ensure_primary_obligation(connection: Connection, subscription: str) -> Obligation:
     row = connection.execute('''
-        SELECT subscription, request_id, start_sequence, confirmed_through
+        SELECT subscription, request_id, start_sequence, confirmed_through, station
         FROM obligations WHERE request_id IS NULL
     ''').fetchone()
     if row is not None:
@@ -37,24 +39,26 @@ def ensure_primary_obligation(connection: Connection, subscription: str) -> Obli
             raise ValueError(f'relay already belongs to primary {current.subscription!r}')
         return current
     connection.execute('''
-        INSERT INTO obligations (subscription, request_id, start_sequence, confirmed_through)
-        VALUES (?, NULL, 0, 0)
+        INSERT INTO obligations (subscription, request_id, start_sequence, confirmed_through,
+                                 station)
+        VALUES (?, NULL, 0, 0, NULL)
     ''', (subscription,))
-    return Obligation(subscription, None, 0, 0)
+    return Obligation(subscription, None, 0, 0, None)
 
 
-def store_review_obligation(connection: Connection, subscription: str,
-                            request_id: str, start_sequence: int) -> Obligation:
+def store_review_obligation(connection: Connection, subscription: str, request_id: str,
+                            start_sequence: int, station: str | None = None) -> Obligation:
     connection.execute('''
-        INSERT INTO obligations (subscription, request_id, start_sequence, confirmed_through)
-        VALUES (?, ?, ?, ?)
-    ''', (subscription, request_id, start_sequence, start_sequence))
-    return Obligation(subscription, request_id, start_sequence, start_sequence)
+        INSERT INTO obligations (subscription, request_id, start_sequence, confirmed_through,
+                                 station)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (subscription, request_id, start_sequence, start_sequence, station))
+    return Obligation(subscription, request_id, start_sequence, start_sequence, station)
 
 
 def find_obligation(connection: Connection, subscription: str) -> Obligation | None:
     row = connection.execute('''
-        SELECT subscription, request_id, start_sequence, confirmed_through
+        SELECT subscription, request_id, start_sequence, confirmed_through, station
         FROM obligations WHERE subscription = ?
     ''', (subscription,)).fetchone()
     return None if row is None else Obligation(*row)
@@ -62,15 +66,18 @@ def find_obligation(connection: Connection, subscription: str) -> Obligation | N
 
 def list_obligations(connection: Connection) -> tuple[Obligation, ...]:
     rows = connection.execute('''
-        SELECT subscription, request_id, start_sequence, confirmed_through
+        SELECT subscription, request_id, start_sequence, confirmed_through, station
         FROM obligations ORDER BY subscription
     ''')
     return tuple(Obligation(*row) for row in rows)
 
 
-def advance_obligation(connection: Connection, obligation: Obligation, sequence: int) -> None:
-    if sequence != obligation.confirmed_through + 1:
+def advance_obligation(connection: Connection, obligation: Obligation, sequence: int,
+                       *, contiguous: bool = True) -> None:
+    if contiguous and sequence != obligation.confirmed_through + 1:
         raise ValueError('confirmation must advance by one batch')
+    if not contiguous and sequence <= obligation.confirmed_through:
+        raise ValueError('confirmation must advance past the current frontier')
     changed = connection.execute('''
         UPDATE obligations SET confirmed_through = ?
         WHERE subscription = ? AND confirmed_through = ?

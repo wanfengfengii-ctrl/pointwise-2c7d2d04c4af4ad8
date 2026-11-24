@@ -53,10 +53,11 @@ def resume_fork(relay, ledger, request: ForkRequest, *, boundary=None) -> Recove
             checkpoint = load_checkpoint(connection, request.source_subscription, request.checkpoint_id)
             if checkpoint.sequence != request.sequence:
                 raise RuntimeError('fork checkpoint changed sequence after binding')
-            review = seed_subscription(connection, request.review_subscription, checkpoint)
+            review = seed_subscription(connection, request.review_subscription, checkpoint,
+                                       request.station)
             receipt = ForkReceipt(request.request_id, request.source_subscription,
                                   request.checkpoint_id, review.subscription,
-                                  review.checkpoint_id, review.sequence)
+                                  review.checkpoint_id, review.sequence, request.station)
             save_receipt(connection, receipt)
             mark_request_ready(connection, request.request_id)
             result = RecoveryResult('ready', receipt)

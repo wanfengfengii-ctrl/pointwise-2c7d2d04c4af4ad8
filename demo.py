@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from station_review_sample import make_batches
 from warehouse.fork.handoff import fork, fork_status
 from warehouse.ledger.bootstrap import initialize
 from warehouse.ledger.checkpoints import read
@@ -81,12 +82,71 @@ def run(relay, ledger, batches):
     }, ensure_ascii=False, separators=(',', ':')))
 
 
+def run_station(relay, ledger):
+    batches = make_batches(same_value=False)
+    main = initialize(relay, ledger)
+    for batch in batches:
+        publish(relay, batch)
+    main_totals = [post(relay, ledger, main).checkpoint.total_liters for _ in range(2)]
+    reclaimed = reclaim(relay, 2)
+    opened = fork(relay, ledger, 'SA', main, 'C1', station='A')
+    assert opened.status == 'ready', 'STATION_REVIEW: opening'
+    review = opened.receipt.review_subscription
+    start = read(ledger, review, opened.receipt.initial_checkpoint)
+    main_totals.append(post(relay, ledger, main).checkpoint.total_liters)
+    held = reclaim(relay, 3)
+    progressed = post(relay, ledger, review)
+    released = reclaim(relay, 3)
+    initialize(relay, ledger)
+    final = read(ledger, review, 'C3')
+    actual = {
+        'main_totals': main_totals, 'reclaimed_before_fork': list(reclaimed.deleted),
+        'station_start': [start.total_liters, [batch.batch_id for batch in start.history]],
+        'held_before_station_ack': list(held.protected), 'station_totals': [start.total_liters,
+                                                                          progressed.checkpoint.total_liters],
+        'station_batch': [progressed.batch.batch_id, progressed.batch.sequence],
+        'station_entries': [[entry.after.station, entry.liters_delta, entry.after.origin.row]
+                            for entry in progressed.batch.deltas],
+        'skipped': [[sequence, batch_id, list(stations)]
+                    for sequence, batch_id, stations in progressed.checkpoint.skipped],
+        'released_after_station_ack': list(released.deleted),
+        'history': [[batch.batch_id, [entry.after.station for entry in batch.deltas]]
+                    for batch in final.history],
+    }
+    expected = {
+        'main_totals': [17, 19, 35], 'reclaimed_before_fork': ['B1', 'B2'],
+        'station_start': [7, ['B1']], 'held_before_station_ack': ['B3'],
+        'station_totals': [7, 18], 'station_batch': ['B3', 3],
+        'station_entries': [['A', 6, 1], ['A', 5, 3]],
+        'skipped': [[2, 'B2', ['B']]], 'released_after_station_ack': ['B3'],
+        'history': [['B1', ['A']], ['B3', ['A', 'A']]],
+    }
+    assert actual == expected, f'STATION_REVIEW: {actual!r}'
+    print(f'甲站从 C1 的 7 L 起，跨过 {progressed.checkpoint.skipped}，'
+          f'B3 落账到 {progressed.checkpoint.total_liters} L。')
+    print(f'甲站确认前保留 {held.protected}，确认后实删 {released.deleted}。')
+    print('POINTWISE_SCENARIO ' + json.dumps({
+        'case_id': 'station-v1',
+        'input': {'batches': batches, 'request': 'SA', 'checkpoint': 'C1',
+                  'station': 'A', 'reclaimed_through': 2},
+        'expected': expected, 'actual': actual,
+        'code_paths': ['warehouse/fork/handoff.py', 'warehouse/relay/windows.py',
+                       'warehouse/retention/eligibility.py', 'warehouse/ledger/post.py',
+                       'warehouse/ledger/checkpoints.py'],
+        'oracle': 'B2 只涉乙站，已回收仍可按正式档案跨过；B3 本站分录为 13−7=6、18−13=5，'
+                  '合计 18 L，原第 1、3 行次序与出处保留。',
+    }, ensure_ascii=False, separators=(',', ':')))
+
+
 def main():
     sample = Path(__file__).with_name('sample-batches.json')
     batches = json.loads(sample.read_text(encoding='utf-8'))
     with TemporaryDirectory(prefix='chenghe-metering-') as directory:
         workspace = Path(directory)
         run(workspace / 'relay.sqlite', workspace / 'ledger.sqlite', batches)
+    with TemporaryDirectory(prefix='chenghe-station-') as directory:
+        workspace = Path(directory)
+        run_station(workspace / 'relay.sqlite', workspace / 'ledger.sqlite')
 
 
 if __name__ == '__main__':

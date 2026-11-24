@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from sqlite3 import Connection
 
@@ -13,6 +14,7 @@ class Checkpoint:
     sequence: int
     last_batch_id: str | None
     balances: tuple[StationDayBalance, ...]
+    skipped: tuple[tuple[int, str, tuple[str, ...]], ...] = ()
 
     @property
     def total_liters(self) -> int:
@@ -28,12 +30,28 @@ class CheckpointView:
     def total_liters(self) -> int:
         return self.checkpoint.total_liters
 
+    @property
+    def skipped(self) -> tuple[tuple[int, str, tuple[str, ...]], ...]:
+        return self.checkpoint.skipped
+
+
+def encode_skips(items: tuple[tuple[int, str, tuple[str, ...]], ...]) -> str:
+    return json.dumps([[sequence, batch_id, list(stations)]
+                       for sequence, batch_id, stations in items],
+                      separators=(',', ':'))
+
+
+def decode_skips(body: str) -> tuple[tuple[int, str, tuple[str, ...]], ...]:
+    return tuple((sequence, batch_id, tuple(stations))
+                 for sequence, batch_id, stations in json.loads(body))
+
 
 def initialize_checkpoints(connection: Connection) -> None:
     connection.execute('''
         CREATE TABLE IF NOT EXISTS checkpoints (
             subscription TEXT NOT NULL, checkpoint_id TEXT NOT NULL,
             sequence INTEGER NOT NULL, last_batch_id TEXT, balances TEXT NOT NULL,
+            skipped TEXT NOT NULL DEFAULT '[]',
             PRIMARY KEY (subscription, checkpoint_id), UNIQUE (subscription, sequence),
             FOREIGN KEY (subscription) REFERENCES subscriptions (subscription)
         )
@@ -42,15 +60,17 @@ def initialize_checkpoints(connection: Connection) -> None:
 
 def save_checkpoint(connection: Connection, checkpoint: Checkpoint) -> None:
     connection.execute('''
-        INSERT INTO checkpoints (subscription, checkpoint_id, sequence, last_batch_id, balances)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO checkpoints (subscription, checkpoint_id, sequence, last_batch_id, balances,
+                                 skipped)
+        VALUES (?, ?, ?, ?, ?, ?)
     ''', (checkpoint.subscription, checkpoint.checkpoint_id, checkpoint.sequence,
-          checkpoint.last_batch_id, encode_balances(checkpoint.balances)))
+          checkpoint.last_batch_id, encode_balances(checkpoint.balances),
+          encode_skips(checkpoint.skipped)))
 
 
 def load_checkpoint(connection: Connection, subscription: str, checkpoint_id: str) -> Checkpoint:
     row = connection.execute('''
-        SELECT sequence, last_batch_id, balances FROM checkpoints
+        SELECT sequence, last_batch_id, balances, skipped FROM checkpoints
         WHERE subscription = ? AND checkpoint_id = ?
     ''', (subscription, checkpoint_id)).fetchone()
     if row is None:
@@ -59,14 +79,16 @@ def load_checkpoint(connection: Connection, subscription: str, checkpoint_id: st
         if exists is None:
             raise KeyError(f'unknown ledger subscription {subscription!r}')
         raise KeyError(f'unknown checkpoint {checkpoint_id!r} for subscription {subscription!r}')
-    sequence, last_batch_id, body = row
-    return Checkpoint(subscription, checkpoint_id, sequence, last_batch_id, decode_balances(body))
+    sequence, last_batch_id, body, skips = row
+    return Checkpoint(subscription, checkpoint_id, sequence, last_batch_id,
+                      decode_balances(body), decode_skips(skips))
 
 
 def seed_checkpoint_prefix(connection: Connection, source: Checkpoint, target: str) -> None:
     connection.execute('''
-        INSERT INTO checkpoints (subscription, checkpoint_id, sequence, last_batch_id, balances)
-        SELECT ?, checkpoint_id, sequence, last_batch_id, balances FROM checkpoints
+        INSERT INTO checkpoints (subscription, checkpoint_id, sequence, last_batch_id, balances,
+                                 skipped)
+        SELECT ?, checkpoint_id, sequence, last_batch_id, balances, skipped FROM checkpoints
         WHERE subscription = ? AND sequence <= ?
     ''', (target, source.subscription, source.sequence))
 

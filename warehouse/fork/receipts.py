@@ -10,6 +10,7 @@ class ForkReceipt:
     review_subscription: str
     initial_checkpoint: str
     sequence: int
+    station: str | None = None
 
 
 def initialize_receipts(connection: Connection) -> None:
@@ -18,6 +19,7 @@ def initialize_receipts(connection: Connection) -> None:
             request_id TEXT PRIMARY KEY, source_subscription TEXT NOT NULL,
             source_checkpoint TEXT NOT NULL, review_subscription TEXT NOT NULL UNIQUE,
             initial_checkpoint TEXT NOT NULL, sequence INTEGER NOT NULL,
+            station TEXT,
             FOREIGN KEY (request_id) REFERENCES fork_requests (request_id),
             FOREIGN KEY (review_subscription, initial_checkpoint)
                 REFERENCES checkpoints (subscription, checkpoint_id)
@@ -28,7 +30,7 @@ def initialize_receipts(connection: Connection) -> None:
 def find_receipt(connection: Connection, request_id: str) -> ForkReceipt | None:
     row = connection.execute('''
         SELECT request_id, source_subscription, source_checkpoint, review_subscription,
-               initial_checkpoint, sequence FROM fork_receipts WHERE request_id = ?
+               initial_checkpoint, sequence, station FROM fork_receipts WHERE request_id = ?
     ''', (request_id,)).fetchone()
     return None if row is None else ForkReceipt(*row)
 
@@ -36,7 +38,8 @@ def find_receipt(connection: Connection, request_id: str) -> ForkReceipt | None:
 def save_receipt(connection: Connection, receipt: ForkReceipt) -> None:
     connection.execute('''
         INSERT INTO fork_receipts (request_id, source_subscription, source_checkpoint,
-                                  review_subscription, initial_checkpoint, sequence)
-        VALUES (?, ?, ?, ?, ?, ?)
+                                  review_subscription, initial_checkpoint, sequence, station)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (receipt.request_id, receipt.source_subscription, receipt.source_checkpoint,
-          receipt.review_subscription, receipt.initial_checkpoint, receipt.sequence))
+          receipt.review_subscription, receipt.initial_checkpoint, receipt.sequence,
+          receipt.station))

@@ -49,11 +49,15 @@ def append_posted_batch(connection: Connection, batch: PostedBatch) -> None:
 
 def read_history_prefix(connection: Connection, subscription: str,
                         sequence: int) -> tuple[PostedBatch, ...]:
-    rows = connection.execute('''
+    return tuple(_decode(subscription, row)
+                 for row in history_prefix_rows(connection, subscription, sequence))
+
+
+def history_prefix_rows(connection: Connection, subscription: str, sequence: int):
+    return connection.execute('''
         SELECT sequence, batch_id, checkpoint_id, deltas FROM posted_batches
         WHERE subscription = ? AND sequence <= ? ORDER BY sequence
-    ''', (subscription, sequence))
-    return tuple(_decode(subscription, row) for row in rows)
+    ''', (subscription, sequence)).fetchall()
 
 
 def seed_history(connection: Connection, source: str, target: str, sequence: int) -> None:

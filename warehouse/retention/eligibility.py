@@ -4,6 +4,7 @@ from sqlite3 import Connection
 from warehouse.relay.entries import list_entries_through
 from warehouse.relay.stream import read_stream_bounds
 from warehouse.retention.claims import list_obligations
+from warehouse.source.stations import concerns
 
 
 @dataclass(frozen=True)
@@ -11,6 +12,15 @@ class ReclaimPlan:
     previous_boundary: int
     delete_through: int
     protected: tuple[str, ...]
+
+
+def _needed_by(entry, obligations) -> bool:
+    for obligation in obligations:
+        if entry.sequence <= obligation.confirmed_through:
+            continue
+        if obligation.station is None or concerns(entry.deltas, obligation.station):
+            return True
+    return False
 
 
 def plan_reclaim(connection: Connection, through: int | None) -> ReclaimPlan:
@@ -21,10 +31,19 @@ def plan_reclaim(connection: Connection, through: int | None) -> ReclaimPlan:
     if not obligations:
         raise RuntimeError('relay has no primary obligation')
     target = bounds.published_through if through is None else min(through, bounds.published_through)
-    oldest_confirmation = min(item.confirmed_through for item in obligations)
-    if oldest_confirmation < bounds.reclaimed_through:
-        raise RuntimeError('a subscription is missing a previously reclaimed prefix')
-    delete_through = max(bounds.reclaimed_through, min(target, oldest_confirmation))
-    protected = tuple(entry.batch_id for entry in list_entries_through(connection, target)
-                      if entry.sequence > delete_through)
+    if bounds.reclaimed_through > target:
+        target = bounds.reclaimed_through
+    for obligation in obligations:
+        if obligation.station is None and obligation.confirmed_through < bounds.reclaimed_through:
+            raise RuntimeError('a subscription is missing a previously reclaimed prefix')
+
+    entries = list_entries_through(connection, target)
+    delete_through = bounds.reclaimed_through
+    for entry in entries:
+        if entry.sequence <= delete_through:
+            continue
+        if _needed_by(entry, obligations):
+            break
+        delete_through = entry.sequence
+    protected = tuple(entry.batch_id for entry in entries if entry.sequence > delete_through)
     return ReclaimPlan(bounds.reclaimed_through, delete_through, protected)

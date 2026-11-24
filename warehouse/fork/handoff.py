@@ -27,10 +27,12 @@ def fork_status(ledger, request_id: str) -> ForkResult:
 
 
 def fork(relay, ledger, request_id: str, source_subscription: str, checkpoint_id: str,
-         *, boundary=None) -> ForkResult:
+         *, station: str | None = None, boundary=None) -> ForkResult:
     require_text(request_id, 'request_id')
     require_text(source_subscription, 'source_subscription')
     require_text(checkpoint_id, 'checkpoint_id')
+    if station is not None:
+        station = require_text(station, 'station')
     try:
         with ledger_transaction(ledger) as connection:
             request = find_request(connection, request_id)
@@ -39,8 +41,9 @@ def fork(relay, ledger, request_id: str, source_subscription: str, checkpoint_id
                 source = find_subscription(connection, source_subscription)
                 if source.kind != 'primary':
                     raise ValueError('fork source must be the primary subscription')
-                request = bind_request(connection, request_id, checkpoint)
-            elif (request.source_subscription, request.checkpoint_id) != (source_subscription, checkpoint_id):
+                request = bind_request(connection, request_id, checkpoint, station)
+            elif ((request.source_subscription, request.checkpoint_id, request.station) !=
+                  (source_subscription, checkpoint_id, station)):
                 raise ValueError(f'fork request {request_id!r} was used with different parameters')
             if request.state != 'pending':
                 result = inspect_fork(connection, request)

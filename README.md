@@ -32,10 +32,16 @@ python3 -B demo.py
 | `warehouse.source.publish` | `publish(relay, batch)` | `PublishedBatch` 含原批号、正式流序和有序冻结分录。同号同参复领。 |
 | `warehouse.ledger.post` | `post(relay, ledger, subscription)` | `PostResult` 为 `posted`、`replayed` 或 `waiting`。有结果时含截点、原批和确认前沿。 |
 | `warehouse.ledger.checkpoints` | `read(ledger, subscription, checkpoint_id)` | `CheckpointView` 含站日账、总量及截至该点的有序历史，包含末批。 |
-| `warehouse.fork.handoff` | `fork(relay, ledger, request_id, source_subscription, checkpoint_id)` | `ForkResult` 为 `ready`、`waiting` 或 `expired`。`ready` 带不可变首执。以 `fork_status(ledger, request_id)` 查询已办状态。 |
+| `warehouse.fork.handoff` | `fork(relay, ledger, request_id, source_subscription, checkpoint_id, *, station=None)` | `ForkResult` 为 `ready`、`waiting` 或 `expired`。`ready` 带不可变首执。省略 `station` 办理原全量交班。以 `fork_status(ledger, request_id)` 查询已办状态。 |
 | `warehouse.retention.reclaim` | `reclaim(relay, through=None)` | `ReclaimResult` 分列实际删除与本次仍受保护的批号。传非负流序作回收上限，省略时以当前流头为上限。 |
 
 库参数为本工作区中两个不同的 SQLite 文件路径。各调用开关自己的连接。`initialize` 返回主订阅号。`post` 可接受关键字 `delivery`，用于把实际领取的旧 `RelayEntry` 重新交给核账。新入账仍须匹配中继当前应交原批，已入账重投按订阅、批号、流序和分录核对。复核订阅继承直到期初截点的历史与旧截点，可在自己的订阅号下追溯。
+
+## 按站复核
+
+`fork` 传非空白 `station` 时按站交班，按原值比较。请求号绑定主订阅、截点和站号，改绑抛 `ValueError`。一批的正式分录只要有一条涉及该站，该批就与本站相关，同值换版、显式缺测和实读零都按分录所属站判断。起始截点之后已有相关的工作批被实删时开办为 `expired`；全为外站分录的已删批可用正式档案跨过。
+
+按站订阅只对本站相关批形成保留义务，回收仍按原流序删除连续前缀，前面有欠交批时停在它之前。`post` 只对下一相关原批入账，沿用 `PostResult` 状态与字段，批次保留原批号和全局流序，分录取本站原序子序列。后续按站截点为 `C` 加原流序。`read` 的 `CheckpointView` 另带 `skipped` 元组，每项为 `(sequence, batch_id, stations)`，列出期初之后到该截点跨过的无关批；期初为空。外站读数与原件不进入本站余额或入账分录，读回只需核账库。
 
 日批包含 `batch_id` 和非空有序 `revisions`。每项有 `station`、ISO `day`、站日内唯一 `revision`、`mode`、`state`、`liters` 和 `origin`。原件定位由 `document` 和正整数 `row` 组成。首次报送使用 `initial`，站日已有事实才可使用 `correction`。更正可附 `previous` 指定当前有效前件。实读填 `reading` 和非负整数升，显式缺测填 `missing` 和 `null`。缺测撤去旧计量贡献，补报实读零保留实读标签。分录保留完整前后事实和原件，首报的前件为 `null`。序号从 1 连续分配，批内按报送次序逐项处理，站日分别核算，所有加减均使用整数。
 

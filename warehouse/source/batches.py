@@ -56,6 +56,17 @@ def find_published_batch(connection: Connection,
     return PublishedBatch(batch_id, sequence, decode_deltas(deltas)), body
 
 
+def find_published_sequence(connection: Connection,
+                            sequence: int) -> PublishedBatch | None:
+    row = connection.execute('''
+        SELECT batch_id, deltas FROM published_batches WHERE sequence = ?
+    ''', (sequence,)).fetchone()
+    if row is None:
+        return None
+    batch_id, deltas = row
+    return PublishedBatch(batch_id, sequence, decode_deltas(deltas))
+
+
 def save_published_batch(connection: Connection, batch: PublishedBatch, body: str) -> None:
     connection.execute('''
         INSERT INTO published_batches (batch_id, sequence, canonical_body, deltas)
